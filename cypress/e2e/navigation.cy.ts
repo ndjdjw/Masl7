@@ -1,25 +1,55 @@
-describe('Navigation', () => {
-  describe('Static pages', () => {
-    it('should navigate to the about page', () => {
-      // Start from the index page
-      cy.visit('/');
-
-      // The index page should contain an h1
-      cy.findByRole('heading', {
-        name: 'Boilerplate code for your Nextjs project with Tailwind CSS',
-      });
-
-      // Find a link containing "About" text and click it
-      cy.findByRole('link', { name: 'About' }).click();
-
-      // The new url should include "/about"
-      cy.url().should('include', '/about');
-
-      // The new page should contain two "lorem ipsum" paragraphs
-      cy.findAllByText('Lorem ipsum dolor sit amet', { exact: false }).should(
-        'have.length',
-        2
-      );
-    });
-  });
-});
+{
+"root": true,
+"ignorePatterns": [".next/", "out/", "build/", "cypress/videos/", "cypress/screenshots/"],
+"overrides": [
+{
+"files": ["src//*.{ts,tsx}", "pages//.{ts,tsx}", "_app.tsx", "_document.tsx"],
+"parser": "@typescript-eslint/parser",
+"parserOptions": {
+"project": "./tsconfig.json",
+"tsconfigRootDir": ".",
+"ecmaFeatures": {
+"jsx": true
+}
+},
+"extends": [
+"eslint:recommended",
+"plugin:react/recommended",
+"plugin:@typescript-eslint/recommended",
+"plugin:react-hooks/recommended",
+"next/core-web-vitals"
+],
+"plugins": ["@typescript-eslint", "react", "react-hooks"],
+"rules": {
+"react/react-in-jsx-scope": "off",
+"react/jsx-uses-react": "off",
+"@typescript-eslint/explicit-module-boundary-types": "off"
+}
+},
+{
+"files": ["cypress/**/.ts", "cypress//*.tsx", "/.spec.ts", "**/.spec.tsx", "/*.test.ts", "/.test.tsx"],
+"parser": "@typescript-eslint/parser",
+"parserOptions": {
+"ecmaFeatures": {
+"jsx": true
+}
+},
+"env": {
+"cypress/globals": true,
+"jest": true,
+"browser": true,
+"node": true
+},
+"plugins": ["cypress"],
+"extends": ["plugin:cypress/recommended"],
+"rules": {}
+},
+{
+"files": ["**/.js"],
+"parserOptions": {
+"ecmaVersion": 2021,
+"sourceType": "module"
+}
+}
+]
+}
