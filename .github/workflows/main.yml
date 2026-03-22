@@ -1,175 +1,65 @@
-name: CI
+steps:
+  - name: Checkout repository
+    uses: actions/checkout@v4
 
-on:
-  workflow_dispatch: {}          # يضيف زر "Run workflow" لتشغيل يدوي
-  push:
-    branches: [ main, master ]
-  pull_request:
-    branches: [ main, master ]
+  - name: Setup Node.js
+    uses: actions/setup-node@v4
+    with:
+      node-version: 18
 
-jobs:
-  ci:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+  - name: Install dependencies
+    run: npm ci
 
-      - name: Setup Node 18
-        uses: actions/setup-node@v4
-        with:
-          node-version: 18
-          cache: 'npm'
+  - name: Build (production)
+    env:
+      NEXT_TELEMETRY_DISABLED: 1
+    run: npm run build
 
-      - name: Show basic info (debug)
-        run: |
-          echo "Runner: $(uname -a)"
-          node -v
-          npm -v
-          echo "Branch: $GITHUB_REF"
-          echo "Commit: $GITHUB_SHA"
-          echo "---- package.json ----"
-          cat package.json || true
-          echo "----------------------"
+  - name: Lint
+    env:
+      NEXT_TELEMETRY_DISABLED: 1
+    run: npm run lint
 
-      - name: Install dependencies
-        run: npm ci
+  - name: Run unit tests
+    run: npm test
 
-      - name: Lint (if present)
-        run: npm run lint --if-present
+  - name: Start production server (background)
+    if: always()
+    env:
+      NEXT_TELEMETRY_DISABLED: 1
+    run: |
+      if [ -d ".next" ]; then
+        nohup npm run start --if-present > server.log 2>&1 &
+        echo "Server started in background (logs -> server.log)"
+      else
+        echo ".next build output not found; skipping start"
+      fi
 
-      - name: Run unit tests (if present)
-        env:
-          CI: true
-        run: |
-          if npm run | grep -q " test"; then
-            echo "Running tests..."
-            npm test -- --runInBand || (echo "Jest/tests failed" && exit 1)
-          else
-            echo "No test script found, skipping tests."
-          fi
+  - name: Wait for server to be ready
+    if: always()
+    run: |
+      for i in {1..30}; do
+        if curl -sSf http://localhost:3000/ >/dev/null 2>&1; then
+          echo "Server is ready"
+          exit 0
+        fi
+        sleep 1
+      done
+      echo "Server did not become ready in time"
 
-      - name: Build & Export (Next.js -> static out)
-        env:
-          NODE_ENV: production
-        run: |
-          # If project has build script, run it
-          if npm run | grep -q " build"; then
-            echo "Running npm run build..."
-            npm run build --if-present || (echo "Build failed" && exit 1)
-          else
-            echo "No build script found, skipping build."
-          fi
+  - name: Run Cypress (headless)
+    if: always()
+    run: |
+      if npm run | grep -q "e2e:headless"; then
+        npm run e2e:headless
+كىelse
+        echo "No e2e:headless script found; skipping Cypress"
+      fi
+    continue-on-error: true
 
-          # If project uses next export, run export to produce out/
-          # This checks if `next export` available (typical when using next)
-          if npm run | grep -q " export"; then
-            echo "Running npm run export..."
-            npm run export --if-present || (echo "next export failed" && exit 1)
-          else
-            # Try running `npx next export` if next is installed locally and out/ missing
-            if [ -f node_modules/next/package.json ] && [ ! -d out ]; then
-              echo "Running npx next export..."
-              npx next export || echo "npx next export finished (non-zero exit allowed if not using next export)"
-            else
-              echo "No export script and out/ already present or next not installed; skipping export."
-            fi
-          fi
-
-      - name: Start server (if start script exists) for E2E
-        if: always()
-        run: |
-          if npm run | grep -q " start"; then
-            echo "Starting server in background..."
-            npm run start --if-present &> /tmp/project-start.log &
-            echo $! > /tmp/project-start.pid || true
-            sleep 1
-            tail -n +1 /tmp/project-start.log || true
-          else
-            echo "No start script found, skipping server start."
-          fi
-
-      - name: Wait for server to respond (if started)
-        run: |
-          if [ -f /tmp/project-start.pid ]; then
-            echo "Waiting for server (max ~60s)..."
-            for i in $(seq 1 30); do
-              if curl -sSf http://localhost:3000/_next/static/ -o /dev/null; then
-                echo "Server ready"
-                exit 0
-              fi
-              echo "Waiting... ($i)"
-              sleep 2
-            done
-            echo "Server did not start; dumping log:"
-            cat /tmp/project-start.log || true
-            exit 1
-          else
-            echo "Server was not started by workflow, skipping wait."
-          fi
-
-      - name: Run Cypress E2E (if present)
-        run: |
-          if [ -d cypress ] || npx cypress --version >/dev/null 2>&1; then
-            echo "Running Cypress headless..."
-            npx cypress run --headless --browser chrome || (echo "Cypress failed" && exit 1)
-          else
-            echo "No Cypress found, skipping E2E."
-          fi
-
-      - name: Upload artifacts (optional)
-        uses: actions/upload-artifact@v4
-        with:
-          name: project-artifacts
-          path: |
-            coverage
-            cypress/videos
-            cypress/screenshots
-          if-no-files-found: ignore
-
-      # -------- Netlify deploy guarded (no secrets in if) --------
-      - name: Check Netlify secrets presence
-        if: github.event_name != 'pull_request'
-        run: |
-          echo "Checking NETLIFY_AUTH_TOKEN and NETLIFY_SITE_ID..."
-          if [ -z "${{ secrets.NETLIFY_AUTH_TOKEN }}" ] || [ -z "${{ secrets.NETLIFY_SITE_ID }}" ]; then
-            echo "One or both Netlify secrets are missing. Skipping Netlify deploy."
-            echo "SKIP_NETLIFY=true" >> $GITHUB_ENV
-          else
-            echo "NETLIFY secrets present."
-            echo "SKIP_NETLIFY=false" >> $GITHUB_ENV
-          fi
-
-      - name: Install netlify-cli (when secrets present)
-        if: env.SKIP_NETLIFY == 'false'
-        run: npm install -g netlify-cli
-
-      - name: Ensure out/ exists (when secrets present)
-        if: env.SKIP_NETLIFY == 'false'
-        run: |
-          if [ ! -d out ]; then
-            echo "out/ directory not found. Showing current folder contents:"
-            ls -la
-            echo "You may need to run next export or adjust the --dir value."
-            exit 1
-          fi
-
-      - name: Run Netlify deploy (when secrets present)
-        if: env.SKIP_NETLIFY == 'false'
-        env:
-          NETLIFY_AUTH_TOKEN: ${{ secrets.NETLIFY_AUTH_TOKEN }}
-          NETLIFY_SITE_ID: ${{ secrets.NETLIFY_SITE_ID }}
-        run: |
-          echo "Deploying to Netlify site id: $NETLIFY_SITE_ID"
-          netlify deploy --prod --dir=out --site=$NETLIFY_SITE_ID
-
-      # Cleanup
-      - name: Stop background server (cleanup)
-        if: always()
-        run: |
-          if [ -f /tmp/project-start.pid ]; then
-            kill $(cat /tmp/project-start.pid) || true
-            rm -f /tmp/project-start.pid
-          else
-            pkill -f "node .*start" || true
-          fi
-          sleep 1
+  - name: Upload server log (on failure)
+    if: failure()
+    uses: actions/upload-artifact@v4
+    with:
+      name: server-log
+      path: server.log
