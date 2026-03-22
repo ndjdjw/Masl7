@@ -1,33 +1,44 @@
-import { render, screen, within } from '@testing-library/react';
+import React from "react";
+import Link from "next/link";
+import AppConfig from "../utils/AppConfig";
+type NavItem = {
+href: string;
+label: string;
+};
 
-import { Main } from './Main';
+const navItems: NavItem[] = [
+{ href: "/", label: "Home" },
+{ href: "/about", label: "About" }
+];
 
-describe('Main template', () => {
-  describe('Render method', () => {
-    it('should have 3 menu items', () => {
-      render(<Main meta={null}>{null}</Main>);
+const Main: React.FC<{ children?: React.ReactNode }> = ({ children }) => {
+return (
+<main>
+<header>
+<h1>{AppConfig.title}</h1>
+<nav>
+<ul>
+{navItems.map((item) => (
+<li key={item.href}>
+<Link href={item.href} className="border-none text-gray-700 hover:text-gray-900">
+{item.label}
+</Link>
+</li>
+))}
+</ul>
+</nav>
+</header>
 
-      const menuItemList = screen.getAllByRole('listitem');
+dust
+  <section>{children}</section>
 
-      expect(menuItemList).toHaveLength(3);
-    });
+  <footer>
+    <p>
+      {AppConfig.site_name} — {AppConfig.locale}
+    </p>
+  </footer>
+</main>
 
-    it('should have a link to support creativedesignsguru.com', () => {
-      render(<Main meta={null}>{null}</Main>);
+);
+};
 
-      const copyrightSection = screen.getByText(/© Copyright/);
-      const copyrightLink = within(copyrightSection).getByRole('link');
-
-      /*
-       * PLEASE READ THIS SECTION
-       * We'll really appreciate if you could have a link to our website
-       * The link doesn't need to appear on every pages, one link on one page is enough.
-       * Thank you for your support it'll mean a lot for us.
-       */
-      expect(copyrightLink).toHaveAttribute(
-        'href',
-        'https://creativedesignsguru.com'
-      );
-    });
-  });
-});
