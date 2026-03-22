@@ -1,59 +1,35 @@
-name: CI - Safe Run (manual + push)
+# اكتب package.json مؤقت صالح للـ npm (سيستبدل الملف إن كان موجود)
+cat > package.json <<'EOF'
+{
+  "name": "next-js-boilerplate",
+  "version": "2.0.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "next lint",
+    "test": "jest"
+  },
+  "dependencies": {
+    "next": "^12.2.0",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0"
+  },
+  "devDependencies": {
+    "eslint": "^8.19.0",
+    "typescript": "^4.7.4",
+    "jest": "^28.1.2",
+    "cypress": "^10.3.0"
+  },
+  "author": "Ixartz"
+}
+EOF
 
-on:
-  push:
-    branches: [ main, master ]
-  pull_request:
-    branches: [ main, master ]
-  workflow_dispatch:
+# تحقق من صلاحية JSON (اختياري)
+node -e "JSON.parse(require('fs').readFileSync('package.json','utf8')); console.log('package.json is valid JSON')"
 
-jobs:
-  basic:
-    name: Basic CI (safe lint)
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '18'
-          cache: 'npm'
-
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Show ESLint configuration files (debug)
-        run: |
-          echo "=== Found .eslintrc files ==="
-          find . -maxdepth 3 -type f -name ".eslintrc*" -print || true
-          echo "=== package.json eslintConfig (if any) ==="
-          node -e "const fs=require('fs'); if(fs.existsSync('package.json')){const j=JSON.parse(fs.readFileSync('package.json')); console.log(JSON.stringify(j.eslintConfig||null,null,2));} else console.log(null)"
-
-      - name: Lint (do not fail workflow if lint errors)
-        run: |
-          if [ -f package.json ] && jq -e '.scripts.lint' package.json >/dev/null 2>&1; then
-            echo "Running lint (errors won't fail this job)..."
-            npm run lint --if-present || echo "Lint had errors but continuing."
-          else
-            echo "No lint script defined, skipping lint."
-          fi
-
-      - name: Run tests if defined
-        env:
-          CI: true
-        run: |
-          if [ -f package.json ] && jq -e '.scripts.test' package.json >/dev/null 2>&1; then
-            npm test -- --ci || npm test || echo "Tests failed or not configured; continuing."
-          else
-            echo "No test script defined, skipping tests."
-          fi
-
-      - name: Build if defined
-        run: |
-          if [ -f package.json ] && jq -e '.scripts.build' package.json >/dev/null 2>&1; then
-            npm run build --if-present || echo "Build failed or not configured; continuing."
-          else
-            echo "No build script defined, skipping build."
-          fi
+# أضف التغييرات إلى git واعمل commit و push
+git add package.json
+git commit -m "fix(package.json): restore valid JSON after accidental overwrite"
+git push origin HEAD
