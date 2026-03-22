@@ -1,0 +1,39 @@
+- name: Use Node.js ${{ matrix.node-version }}
+    uses: actions/setup-node@v4
+    with:
+      node-version: ${{ matrix.node-version }}
+      cache: 'npm' # استخدم pnpm أو yarn إذا تحتاج
+
+  - name: Install dependencies
+    run: npm install
+    env:
+      CI: true
+
+  - name: Run TypeScript type check
+    run: |
+      if npx tsc --noEmit; then
+        echo "TypeScript checks passed"
+      else
+        echo "TypeScript errors detected"
+        exit 1
+      fi
+
+  - name: Run ESLint (if configured)
+    run: |
+      if [ -f package.json ] && grep -q "\"lint\"" package.json; then
+        npm run lint --silent || exit 1
+      else
+        echo "No lint script found, skipping ESLint"
+      fi
+
+  - name: Build Next.js
+    run: npm run build
+    env:
+      NODE_ENV: production
+
+  - name: Upload build artifact (optional)
+    if: success()
+    uses: actions/upload-artifact@v4
+    with:
+      name: next-build
+      path: .next
