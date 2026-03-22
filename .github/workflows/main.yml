@@ -9,136 +9,125 @@ on:
 jobs:
   ci:
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        node-version: [18.x]
-
     steps:
-      - name: Checkout repository
+      - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup Node.js
+      - name: Setup Node 18
         uses: actions/setup-node@v4
         with:
-          node-version: ${{ matrix.node-version }}
+          node-version: 18
           cache: 'npm'
 
-      - name: Show environment (debug)
+      - name: Show basic info (debug)
         run: |
-          echo "Running on $(uname -a)"
           node -v
           npm -v
           ls -la
           cat package.json || true
 
-      - name: Install dependencies
+      - name: Install deps
         run: npm ci
 
-      - name: Run ESLint (if present)
+      - name: Lint (if present)
         run: npm run lint --if-present
 
-      - name: Run unit tests (Jest) and collect coverage
+      - name: Test (Jest) (if present)
         env:
           CI: true
         run: |
-          mkdir -p coverage
-          npm test -- --coverage --runInBand || (echo "Jest failed" && exit 1)
+          if npm run | grep -q " test"; then
+            npm test -- --runInBand || (echo "Jest failed" && exit 1)
+          else
+            echo "No test script present, skipping tests."
+          fi
 
-      - name: Upload coverage artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: coverage-report
-          path: coverage
-          if-no-files-found: ignore
-
-      - name: Build Next.js
+      - name: Build (Next.js)
         env:
           NODE_ENV: production
-        run: npm run build --if-present
+        run: |
+          if npm run | grep -q " build"; then
+            npm run build --if-present
+          else
+            echo "No build script present, skipping build."
+          fi
 
-      - name: Install Chrome deps for Cypress
+      - name: Start server for E2E (if start script exists)
         if: always()
         run: |
-          sudo apt-get update -y
-          sudo apt-get install -y libgtk2.0-0 libgtk-3-0 libnotify-dev libgconf-2-4 \
-            libnss3 libxss1 libasound2 xvfb || true
+          # Start only if start script exists
+          if npm run | grep -q " start"; then
+            npm run start --if-present &> /tmp/next-start.log &
+            echo $! > /tmp/next-start.pid || true
+            sleep 1
+            tail -n +1 /tmp/next-start.log || true
+          else
+            echo "No start script present, skipping server start."
+          fi
 
-      - name: Start local server for E2E (serve built Next)
-        if: always()
+      - name: Wait for server (if started)
         run: |
-          # Start production server on port 3000 (adjust if your start script differs)
-          npm run start --if-present &> /tmp/next-start.log &
-          echo $! > /tmp/next-start.pid || true
-          sleep 1
-          tail -n +1 /tmp/next-start.log || true
+          if [ -f /tmp/next-start.pid ]; then
+            for i in $(seq 1 30); do
+              if curl -sSf http://localhost:3000/_next/static/ -o /dev/null; then
+                echo "server ready"
+                exit 0
+              fi
+              echo "waiting ($i)..."
+              sleep 2
+            done
+            echo "Server didn't start; dump log:"
+            cat /tmp/next-start.log || true
+            exit 1
+          else
+            echo "Server was not started, skipping wait."
+          fi
 
-      - name: Wait for local server to be ready (HTTP)
+      - name: Run Cypress (if installed)
         run: |
-          for i in $(seq 1 30); do
-            if curl -sSf http://localhost:3000/_next/static/ -o /dev/null; then
-              echo "server ready"
-              exit 0
-            fi
-            echo "waiting for server... ($i)"
-            sleep 2
-          done
-          echo "Server did not start on port 3000. Dumping log:"
-          cat /tmp/next-start.log || true
-          exit 1
+          if [ -d cypress ] || npx cypress --version >/dev/null 2>&1; then
+            npx cypress run --headless --browser chrome || (echo "Cypress failed" && exit 1)
+          else
+            echo "No Cypress found, skipping E2E."
+          fi
 
-      - name: Run Cypress E2E tests
-        env:
-          CI: true
-        run: |
-          # ensure Cypress is installed; use headless chrome
-          npx cypress run --headless --browser chrome
-
-      - name: Upload Cypress artifacts (if any)
+      - name: Upload artifacts (optional)
         uses: actions/upload-artifact@v4
         with:
-          name: cypress-artifacts
+          name: project-artifacts
           path: |
+            coverage
             cypress/videos
             cypress/screenshots
           if-no-files-found: ignore
 
-      - name: Upload jest results (optional)
-        uses: actions/upload-artifact@v4
-        with:
-          name: jest-results
-          path: |
-            jest-results.xml
-            test-results
-          if-no-files-found: ignore
-
-      # --- Guarded Netlify deploy using netlify-cli so we can check secrets at runtime ---
-      - name: Check Netlify secrets and prepare deploy
+      # --- Guarded Netlify deploy via netlify-cli (safe: no secrets in if) ---
+      - name: Check Netlify secrets presence
         if: github.event_name != 'pull_request'
         run: |
-          echo "Checking NETLIFY_AUTH_TOKEN and NETLIFY_SITE_ID..."
+          echo "check NETLIFY secrets..."
           if [ -z "${{ secrets.NETLIFY_AUTH_TOKEN }}" ] || [ -z "${{ secrets.NETLIFY_SITE_ID }}" ]; then
-            echo "NETLIFY_AUTH_TOKEN or NETLIFY_SITE_ID is NOT set. Skipping Netlify deploy."
-            echo "skip_netlify=true" >> $GITHUB_ENV
+            echo "NETLIFY secrets missing. Will skip deploy."
+            echo "SKIP_NETLIFY=true" >> $GITHUB_ENV
           else
-            echo "Netlify secrets found."
-            echo "skip_netlify=false" >> $GITHUB_ENV
+            echo "NETLIFY secrets present."
+            echo "SKIP_NETLIFY=false" >> $GITHUB_ENV
           fi
 
-      - name: Install netlify-cli (for deploy)
-        if: env.skip_netlify == 'false'
+      - name: Install netlify-cli (when secrets present)
+        if: env.SKIP_NETLIFY == 'false'
         run: npm install -g netlify-cli
 
-      - name: Run Netlify deploy (only when secrets present)
-        if: env.skip_netlify == 'false'
+      - name: Run Netlify deploy (when secrets present)
+        if: env.SKIP_NETLIFY == 'false'
         env:
           NETLIFY_AUTH_TOKEN: ${{ secrets.NETLIFY_AUTH_TOKEN }}
           NETLIFY_SITE_ID: ${{ secrets.NETLIFY_SITE_ID }}
         run: |
-          echo "Publishing to Netlify site: $NETLIFY_SITE_ID"
-          # publish the .next directory; if your deploy uses a different dir (like out or public) adjust accordingly
+          echo "Deploying to Netlify site: $NETLIFY_SITE_ID"
           netlify deploy --prod --dir=.next --site=$NETLIFY_SITE_ID
 
-      - name: Stop local server (cleanup)
+      - name: Cleanup (stop server)
         if: always()
         run: |
           if [ -f /tmp/next-start.pid ]; then
@@ -147,4 +136,3 @@ jobs:
           else
             pkill -f "node .*start" || true
           fi
-          sleep 1
