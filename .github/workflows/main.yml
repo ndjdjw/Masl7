@@ -21,71 +21,78 @@ jobs:
 
       - name: Show basic info (debug)
         run: |
+          echo "Runner: $(uname -a)"
           node -v
           npm -v
           ls -la
+          echo "---- package.json ----"
           cat package.json || true
+          echo "----------------------"
 
-      - name: Install deps
+      - name: Install dependencies
         run: npm ci
 
       - name: Lint (if present)
         run: npm run lint --if-present
 
-      - name: Test (Jest) (if present)
+      - name: Run unit tests (if present)
         env:
           CI: true
         run: |
           if npm run | grep -q " test"; then
-            npm test -- --runInBand || (echo "Jest failed" && exit 1)
+            echo "Running tests..."
+            npm test -- --runInBand || (echo "Jest/tests failed" && exit 1)
           else
-            echo "No test script present, skipping tests."
+            echo "No test script found, skipping tests."
           fi
 
-      - name: Build (Next.js)
+      - name: Build (if present)
         env:
           NODE_ENV: production
         run: |
           if npm run | grep -q " build"; then
-            npm run build --if-present
+            echo "Running build..."
+            npm run build --if-present || (echo "Build failed" && exit 1)
           else
-            echo "No build script present, skipping build."
+            echo "No build script found, skipping build."
           fi
 
-      - name: Start server for E2E (if start script exists)
+      - name: Start server (if start script exists) for E2E
         if: always()
         run: |
-          # Start only if start script exists
           if npm run | grep -q " start"; then
-            npm run start --if-present &> /tmp/next-start.log &
-            echo $! > /tmp/next-start.pid || true
+            echo "Starting server in background..."
+            npm run start --if-present &> /tmp/project-start.log &
+            echo $! > /tmp/project-start.pid || true
             sleep 1
-            tail -n +1 /tmp/next-start.log || true
+            tail -n +1 /tmp/project-start.log || true
           else
-            echo "No start script present, skipping server start."
+            echo "No start script found, skipping server start."
           fi
 
-      - name: Wait for server (if started)
+      - name: Wait for server to respond (if started)
         run: |
-          if [ -f /tmp/next-start.pid ]; then
+          if [ -f /tmp/project-start.pid ]; then
+            echo "Waiting for server (max ~60s)..."
             for i in $(seq 1 30); do
               if curl -sSf http://localhost:3000/_next/static/ -o /dev/null; then
-                echo "server ready"
+                echo "Server ready"
                 exit 0
               fi
-              echo "waiting ($i)..."
+              echo "Waiting... ($i)"
               sleep 2
             done
-            echo "Server didn't start; dump log:"
-            cat /tmp/next-start.log || true
+            echo "Server did not start; dumping log:"
+            cat /tmp/project-start.log || true
             exit 1
           else
-            echo "Server was not started, skipping wait."
+            echo "Server was not started by workflow, skipping wait."
           fi
 
-      - name: Run Cypress (if installed)
+      - name: Run Cypress E2E (if present)
         run: |
           if [ -d cypress ] || npx cypress --version >/dev/null 2>&1; then
+            echo "Running Cypress headless..."
             npx cypress run --headless --browser chrome || (echo "Cypress failed" && exit 1)
           else
             echo "No Cypress found, skipping E2E."
@@ -101,13 +108,13 @@ jobs:
             cypress/screenshots
           if-no-files-found: ignore
 
-      # --- Guarded Netlify deploy via netlify-cli (safe: no secrets in if) ---
+      # -------- Netlify deploy guarded (no secrets in if) --------
       - name: Check Netlify secrets presence
         if: github.event_name != 'pull_request'
         run: |
-          echo "check NETLIFY secrets..."
+          echo "Checking NETLIFY_AUTH_TOKEN and NETLIFY_SITE_ID..."
           if [ -z "${{ secrets.NETLIFY_AUTH_TOKEN }}" ] || [ -z "${{ secrets.NETLIFY_SITE_ID }}" ]; then
-            echo "NETLIFY secrets missing. Will skip deploy."
+            echo "One or both Netlify secrets are missing. Skipping Netlify deploy."
             echo "SKIP_NETLIFY=true" >> $GITHUB_ENV
           else
             echo "NETLIFY secrets present."
@@ -124,15 +131,18 @@ jobs:
           NETLIFY_AUTH_TOKEN: ${{ secrets.NETLIFY_AUTH_TOKEN }}
           NETLIFY_SITE_ID: ${{ secrets.NETLIFY_SITE_ID }}
         run: |
-          echo "Deploying to Netlify site: $NETLIFY_SITE_ID"
+          echo "Deploying to Netlify site id: $NETLIFY_SITE_ID"
+          # Adjust --dir to the actual output folder of your build (e.g., out, build, .next)
           netlify deploy --prod --dir=.next --site=$NETLIFY_SITE_ID
 
-      - name: Cleanup (stop server)
+      # Cleanup
+      - name: Stop background server (cleanup)
         if: always()
         run: |
-          if [ -f /tmp/next-start.pid ]; then
-            kill $(cat /tmp/next-start.pid) || true
-            rm -f /tmp/next-start.pid
+          if [ -f /tmp/project-start.pid ]; then
+            kill $(cat /tmp/project-start.pid) || true
+            rm -f /tmp/project-start.pid
           else
             pkill -f "node .*start" || true
           fi
+          sleep 1
