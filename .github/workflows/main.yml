@@ -28,9 +28,10 @@ steps:
   - name: Lint
     env:
       NEXT_TELEMETRY_DISABLED: 1
+    continue-on-error: false
     run: |
       echo "Running npm run lint..."
-      npm run lint || (echo "Lint failed"; exit 1)
+      npm run lint
 
   - name: Run unit tests
     run: |
@@ -38,7 +39,7 @@ steps:
       npm test
 
   - name: Start production server (background)
-    if: ${{ always() }}
+    if: ${{ success() }}
     env:
       NEXT_TELEMETRY_DISABLED: 1
     run: |
@@ -54,10 +55,10 @@ steps:
       fi
 
   - name: Wait for server to be ready
-    if: ${{ always() }}
+    if: ${{ success() }}
     run: |
       if ! command -v curl >/dev/null 2>&1; then
-        apt-get update && apt-get install -y curl
+        sudo apt-get update && sudo apt-get install -y curl
       fi
       echo "Waiting for http://localhost:3000/ ..."
       for i in {1..30}; do
@@ -71,7 +72,7 @@ steps:
       exit 1
 
   - name: Run Cypress (headless)
-    if: ${{ always() }}
+    if: ${{ success() }}
     env:
       NEXT_TELEMETRY_DISABLED: 1
     run: |
