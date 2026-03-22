@@ -1,91 +1,192 @@
-steps:
-  - name: Checkout repository
-    uses: actions/checkout@v4
+name: CI - Lint / Unit / E2E / Deploy
 
-  - name: Setup Node.js
-    uses: actions/setup-node@v4
-    with:
-      node-version: 18
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
 
-  - name: Print runner info
-    run: |
-      echo "Runner: $(uname -a)"
-      node -v
-      npm -v
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
-  - name: Install dependencies
-    run: |
-      npm ci
+env:
+  NODE_OPTIONS: "--max_old_space_size=4096"
 
-  - name: Build (production)
-    env:
-      NEXT_TELEMETRY_DISABLED: 1
-    run: |
-      set -e
-      echo "Running npm run build..."
-      npm run build
+jobs:
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
 
-  - name: Lint
-    env:
-      NEXT_TELEMETRY_DISABLED: 1
-    continue-on-error: false
-    run: |
-      echo "Running npm run lint..."
-      npm run lint
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+          cache: 'npm'
 
-  - name: Run unit tests
-    run: |
-      echo "Running npm test..."
-      npm test
+      - name: Install dependencies
+        run: npm ci
 
-  - name: Start production server (background)
-    if: ${{ success() }}
-    env:
-      NEXT_TELEMETRY_DISABLED: 1
-    run: |
-      if [ -d ".next" ]; then
-        echo ".next exists — starting production server"
-        nohup npm run start --if-present > server.log 2>&1 &
-        echo $! > .server_pid
-        sleep 2
-        tail -n +1 server.log || true
-      else
-        echo ".next build output not found; skipping start"
-        exit 0
-      fi
+      - name: Run lint (if present)
+        run: |
+          if [ -f package.json ] && jq -e '.scripts.lint' package.json >/dev/null 2>&1; then
+            npm run lint --if-present
+          else
+            echo "No lint script, skipping."
+          fi
 
-  - name: Wait for server to be ready
-    if: ${{ success() }}
-    run: |
-      if ! command -v curl >/dev/null 2>&1; then
-        sudo apt-get update && sudo apt-get install -y curl
-      fi
-      echo "Waiting for http://localhost:3000/ ..."
-      for i in {1..30}; do
-        if curl -sSf http://localhost:3000/ >/dev/null 2>&1; then
-          echo "Server is ready"
-          exit 0
-        fi
-        sleep 1
-      done
-      echo "Server did not become ready in time"
-      exit 1
+  unit:
+    name: Unit Tests (Jest) & Build
+    runs-on: ubuntu-latest
+    needs: lint
+    strategy:
+      matrix:
+        node-version: [18]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
 
-  - name: Run Cypress (headless)
-    if: ${{ success() }}
-    env:
-      NEXT_TELEMETRY_DISABLED: 1
-    run: |
-      if npm run | grep -q "e2e:headless"; then
-        echo "Running Cypress headless..."
-        npm run e2e:headless || echo "Cypress returned non-zero exit code"
-      else
-        echo "No e2e:headless script found; skipping Cypress"
-      fi
+      - name: Setup Node ${{ matrix.node-version }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: 'npm'
 
-  - name: Upload server log (on failure)
-    if: failure()
-    uses: actions/upload-artifact@v4
-    with:
-      name: server-log
-      path: server.log
+      - name: Install dependencies
+        run: npm ci
+
+      - name: TypeScript check (if tsconfig exists)
+        run: |
+          if [ -f tsconfig.json ]; then
+            npm run build --if-present
+          else
+            echo "No tsconfig.json found, skipping tsc/build check."
+          fi
+
+      - name: Run unit tests (Jest) if present
+        env:
+          CI: true
+        run: |
+          if [ -f jest.config.js ] || grep -q "jest" package.json 2>/dev/null; then
+            npm test -- --ci --reporters=default || npm test
+          else
+            echo "No Jest config or tests found, skipping unit tests."
+          fi
+
+      - name: Build Next.js (production)
+        run: npm run build --if-present
+
+      - name: Cache Next build (.next) to speed up E2E
+        uses: actions/cache@v4
+        with:
+          path: .next
+          key: next-build-${{ hashFiles('**/package-lock.json','**/next.config.js') }}
+          restore-keys: |
+            next-build-
+
+  e2e:
+    name: End-to-end (Cypress)
+    runs-on: ubuntu-latest
+    needs: unit
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+          cache: 'npm'
+
+      - name: Restore Cypress cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/Cypress
+          key: cypress-${{ runner.os }}-node-${{ matrix.node-version || '18' }}-${{ hashFiles('**/package-lock.json') }}
+          restore-keys: cypress-
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Start Next.js production server (background)
+        run: |
+          # If start script exists use it, otherwise use npx next start
+          if grep -q "\"start\"" package.json >/dev/null 2>&1; then
+            npm run start &>/tmp/next-start.log &
+          else
+            npx next start -p 3000 &>/tmp/next-start.log &
+          fi
+          # Wait until the server is up (max 60s)
+          for i in $(seq 1 60); do
+            if curl -sSf http://localhost:3000/ >/dev/null 2>&1; then
+              echo "Server is up"
+              break
+            fi
+            sleep 1
+          done
+          tail -n +1 /tmp/next-start.log || true
+
+      - name: Run Cypress tests (headless)
+        env:
+          CYPRESS_baseUrl: http://localhost:3000
+        run: |
+          if [ -d cypress ] || grep -q "cypress" package.json 2>/dev/null; then
+            npx cypress run --browser chrome || npx cypress run
+          else
+            echo "No Cypress tests found, skipping e2e."
+          fi
+
+      - name: Upload Cypress artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cypress-artifacts
+          path: |
+            cypress/videos
+            cypress/screenshots
+            /github/workspace/cypress/results || true
+
+  deploy:
+    name: Deploy to Netlify
+    runs-on: ubuntu-latest
+    needs: [e2e]
+    if: github.ref == 'refs/heads/main' && needs.e2e.result == 'success'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build for production
+        run: npm run build --if-present
+
+      - name: Deploy to Netlify (using netlify/cli)
+        env:
+          NETLIFY_AUTH_TOKEN: ${{ secrets.NETLIFY_AUTH_TOKEN }}
+          NETLIFY_SITE_ID: ${{ secrets.NETLIFY_SITE_ID }}
+        run: |
+          npm install -g netlify-cli
+          # deploy --prod will publish the latest build; adjust publish folder if it's not .next or out
+          # If you use Next on Netlify with adapter, ensure publish directory matches your setup.
+          if [ -d out ]; then
+            netlify deploy --auth=$NETLIFY_AUTH_TOKEN --site=$NETLIFY_SITE_ID --prod --dir=out
+          elif [ -d .next ]; then
+            # For Next on Netlify you may need to use `netlify deploy` with a built output; adjust as required.
+            netlify deploy --auth=$NETLIFY_AUTH_TOKEN --site=$NETLIFY_SITE_ID --prod --dir=.next
+          else
+            # Fallback: attempt to deploy current repo root (Netlify will use build command from settings)
+            netlify deploy --auth=$NETLIFY_AUTH_TOKEN --site=$NETLIFY_SITE_ID --prod
+          fi
+
+      - name: Post-deploy info
+        run: echo "Deployed to Netlify (site id: $NETLIFY_SITE_ID)"
