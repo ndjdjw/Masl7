@@ -1,64 +1,113 @@
-- name: Setup Node.js 20
-    uses: actions/setup-node@v4
-    with:
-      node-version: '20'
-      cache: 'npm'
+name: CI
 
-  - name: Install dependencies (npm ci)
-    run: |
-      echo ">>> Installing dependencies"
-      npm ci
-    env:
-      CI: true
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
 
-  - name: TypeScript check (if tsc available)
-    run: |
-      echo ">>> Checking TypeScript (tsc --noEmit) if available"
-      if npx -y tsc --noEmit 2>/dev/null; then
-        echo "TypeScript check passed"
-      else
-        echo "No TypeScript check or tsc failed/skipped"
-      fi
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        node-version: [18.x]
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
-  - name: Run ESLint (if lint script exists)
-    run: |
-      echo ">>> Running ESLint if configured"
-      if grep -q "\"lint\"" package.json; then
-        echo "Found lint script — running npm run lint"
-        npm run lint --silent
-      else
-        echo "No lint script found — skipping ESLint"
-      fi
+      - name: Use Node.js ${{ matrix.node-version }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: 'npm'
 
-  - name: Run Jest tests (if test script exists)
-    run: |
-      echo ">>> Running Jest tests if configured"
-      # We check for "test" script but ignore a default placeholder that might just be "echo..."
-      if grep -q "\"test\"" package.json && ! grep -q "\"test\": \"echo" package.json; then
-        echo "Found test script — running npm run test"
-        npm run test --silent
-      else
-        echo "No real test script found — skipping Jest"
-      fi
+      - name: Install dependencies
+        run: npm ci
 
-  - name: Build Next.js (production)
-    run: |
-      echo ">>> Building Next.js (npm run build)"
-      npm run build
-    env:
-      NODE_ENV: production
+      - name: Run ESLint
+        run: npm run lint --if-present
+        continue-on-error: false
 
-  - name: Run Cypress (only if config exists)
-    run: |
-      echo ">>> Checking for Cypress configuration"
-      if [ -f cypress.config.ts ] || [ -f cypress.config.js ]; then
-        echo "Cypress config found — running Cypress headless"
-        npx cypress run --headless
-      else
-        echo "No Cypress config found — skipping Cypress"
-      fi
+      - name: Run unit tests (Jest) and collect coverage
+        env:
+          CI: true
+        run: |
+          # ensure coverage folder exists for artifact upload even if jest not configured
+          mkdir -p coverage
+          npm test -- --coverage --runInBand || (echo "Jest failed" && exit 1)
 
-  - name: Final status
-    run: |
-      echo ">>> CI workflow finished for commit $GITHUB_SHA"
-      echo "If any step failed earlier, check the job logs above."
+      - name: Upload test coverage artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: coverage
+
+      - name: Build Next.js
+        env:
+          NODE_ENV: production
+        run: npm run build --if-present
+
+      - name: Start local server for E2E (serve built Next)
+        if: always()
+        run: |
+          # If you have a custom start/build script adjust these commands.
+          # This uses `npm run start` to serve the built app on port 3000.
+          # If your project uses `next start` or a different port adjust accordingly.
+          nohup npm run start --if-present &>/tmp/next-start.log &
+
+      - name: Wait for local server to be ready
+        run: |
+          # wait for port 3000 up to 60s (adjust port if needed)
+          for i in {1..30}; do
+            if nc -z localhost 3000; then
+              echo "server up"
+              exit 0
+            fi
+            echo "waiting..."
+            sleep 2
+          done
+          echo "Server did not start on port 3000"
+          cat /tmp/next-start.log || true
+          exit 1
+
+      - name: Run Cypress E2E tests
+        env:
+          CI: true
+        run: |
+          # If Cypress is configured with scripts like "cy:run" change accordingly.
+          npx cypress run --browser chrome || (echo "Cypress failed" && exit 1)
+        continue-on-error: false
+
+      - name: Upload Cypress videos/screenshots (if any)
+        uses: actions/upload-artifact@v4
+        with:
+          name: cypress-artifacts
+          path: |
+            cypress/videos
+            cypress/screenshots
+          if-no-files-found: ignore
+
+      - name: Upload test-results (jest) (optional)
+        uses: actions/upload-artifact@v4
+        with:
+          name: jest-results
+          path: |
+            jest-results.xml
+            test-results
+          if-no-files-found: ignore
+
+      - name: Deploy to Netlify (optional)
+        if: github.event_name != 'pull_request' && secrets.NETLIFY_AUTH_TOKEN && secrets.NETLIFY_SITE_ID
+        uses: nwtgck/actions-netlify@v1.2
+        with:
+          publish-dir: .next
+          production-branch: main
+          enable-commit-comment: false
+          NETLIFY_AUTH_TOKEN: ${{ secrets.NETLIFY_AUTH_TOKEN }}
+          NETLIFY_SITE_ID: ${{ secrets.NETLIFY_SITE_ID }}
+
+      - name: Stop local server (cleanup)
+        if: always()
+        run: |
+          pkill -f "node .*start" || true
