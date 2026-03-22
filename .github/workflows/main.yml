@@ -1,56 +1,64 @@
-steps:
-  - name: Checkout repository
-    uses: actions/checkout@v4
-
-  - name: Use Node.js ${{ matrix.node-version }}
+- name: Setup Node.js 20
     uses: actions/setup-node@v4
     with:
-      node-version: ${{ matrix.node-version }}
+      node-version: '20'
       cache: 'npm'
 
-  - name: Install dependencies
-    run: npm ci
+  - name: Install dependencies (npm ci)
+    run: |
+      echo ">>> Installing dependencies"
+      npm ci
     env:
       CI: true
 
-  - name: TypeScript type check (if tsc present)
+  - name: TypeScript check (if tsc available)
     run: |
-      if command -v npx >/dev/null 2>&1 && npx tsc --noEmit; then
-        echo "TypeScript OK"
+      echo ">>> Checking TypeScript (tsc --noEmit) if available"
+      if npx -y tsc --noEmit 2>/dev/null; then
+        echo "TypeScript check passed"
       else
-        echo "TypeScript check skipped or failed"
+        echo "No TypeScript check or tsc failed/skipped"
       fi
-    continue-on-error: false
 
-  - name: Run ESLint (if configured)
+  - name: Run ESLint (if lint script exists)
     run: |
+      echo ">>> Running ESLint if configured"
       if grep -q "\"lint\"" package.json; then
+        echo "Found lint script — running npm run lint"
         npm run lint --silent
       else
-        echo "No lint script found, skipping ESLint"
+        echo "No lint script found — skipping ESLint"
       fi
-    continue-on-error: false
 
-  - name: Run Jest tests (if configured)
+  - name: Run Jest tests (if test script exists)
     run: |
-      if grep -q "\"test\"" package.json; then
+      echo ">>> Running Jest tests if configured"
+      # We check for "test" script but ignore a default placeholder that might just be "echo..."
+      if grep -q "\"test\"" package.json && ! grep -q "\"test\": \"echo" package.json; then
+        echo "Found test script — running npm run test"
         npm run test --silent
       else
-        echo "No test script found, skipping Jest"
+        echo "No real test script found — skipping Jest"
       fi
-    continue-on-error: false
 
-  - name: Build Next.js
-    run: npm run build
+  - name: Build Next.js (production)
+    run: |
+      echo ">>> Building Next.js (npm run build)"
+      npm run build
     env:
       NODE_ENV: production
 
-  - name: Run Cypress tests (if cypress installed and script exists)
+  - name: Run Cypress (only if config exists)
     run: |
-      if [ -f cypress.config.ts ] || grep -q "cypress" package.json; then
-        # Install Cypress binary (if needed) and run headless
-        npx cypress run --headless || { echo "Cypress run failed"; exit 1; }
+      echo ">>> Checking for Cypress configuration"
+      if [ -f cypress.config.ts ] || [ -f cypress.config.js ]; then
+        echo "Cypress config found — running Cypress headless"
+        npx cypress run --headless
       else
-        echo "No Cypress config or scripts found, skipping Cypress"
+        echo "No Cypress config found — skipping Cypress"
       fi
-    continue-on-error: false
+
+  - name: Final status
+    run: |
+      echo ">>> CI workflow finished for commit $GITHUB_SHA"
+      echo "If any step failed earlier, check the job logs above."
