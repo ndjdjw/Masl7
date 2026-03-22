@@ -1,175 +1,62 @@
-name: CI - Lint / Unit / E2E / Deploy
-
-on:
-  push:
-    branches: [ main, master ]
-  pull_request:
-    branches: [ main, master ]
-  workflow_dispatch:
-
-concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
-
-env:
-  NODE_OPTIONS: "--max_old_space_size=4096"
-
-jobs:
-  lint:
-    name: Lint
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '18'
-          cache: 'npm'
-
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Run lint (if present)
-        run: |
-          if [ -f package.json ] && jq -e '.scripts.lint' package.json >/dev/null 2>&1; then
-            npm run lint --if-present
-          else
-            echo "No lint script, skipping."
-          fi
-
-  unit:
-    name: Unit Tests (Jest) & Build
-    runs-on: ubuntu-latest
-    needs: lint
-    strategy:
-      matrix:
-        node-version: [18]
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Setup Node
-        uses: actions/setup-node@v4
-        with:
-          node-version: ${{ matrix.node-version }}
-          cache: 'npm'
-
-      - name: Install dependencies
-        run: npm ci
-
-      - name: TypeScript check (if tsconfig exists) / Build
-        run: |
-          if [ -f tsconfig.json ] || grep -q "build" package.json 2>/dev/null; then
-            npm run build --if-present
-          else
-            echo "No tsconfig or build script found, skipping build."
-          fi
-
-      - name: Run unit tests (Jest) if present
-        env:
-          CI: true
-        run: |
-          if [ -f jest.config.js ] || grep -q "jest" package.json 2>/dev/null; then
-            npm test -- --ci --reporters=default || npm test
-          else
-            echo "No Jest config or tests found, skipping unit tests."
-          fi
-
-  e2e:
-    name: End-to-end (Cypress)
-    runs-on: ubuntu-latest
-    needs: unit
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Setup Node
-        uses: actions/setup-node@v4
-        with:
-          node-version: '18'
-          cache: 'npm'
-
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Start Next.js server (background)
-        run: |
-          # Prefer start script; fallback to next start on port 3000
-          if grep -q "\"start\"" package.json >/dev/null 2>&1; then
-            npm run start &>/tmp/next-start.log &
-          else
-            npx next start -p 3000 &>/tmp/next-start.log &
-          fi
-          # wait up to 60s
-          for i in $(seq 1 60); do
-            if curl -sSf http://localhost:3000/ >/dev/null 2>&1; then
-              echo "Server is up"
-              break
-            fi
-            sleep 1
-          done
-          tail -n +1 /tmp/next-start.log || true
-
-      - name: Run Cypress tests (headless) if present
-        env:
-          CYPRESS_baseUrl: http://localhost:3000
-        run: |
-          if [ -d cypress ] || grep -q "cypress" package.json 2>/dev/null; then
-            npx cypress run --browser chrome || npx cypress run
-          else
-            echo "No Cypress tests found, skipping e2e."
-          fi
-
-      - name: Upload Cypress artifacts
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: cypress-artifacts
-          path: |
-            cypress/videos
-            cypress/screenshots
-            /github/workspace/cypress/results || true
-
-  deploy:
-    name: Deploy to Netlify (optional)
-    runs-on: ubuntu-latest
-    needs: [e2e]
-    if: github.ref == 'refs/heads/main' && needs.e2e.result == 'success'
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Setup Node
-        uses: actions/setup-node@v4
-        with:
-          node-version: '18'
-          cache: 'npm'
-
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Build for production
-        run: npm run build --if-present
-
-      - name: Deploy to Netlify (if secrets present)
-        env:
-          NETLIFY_AUTH_TOKEN: ${{ secrets.NETLIFY_AUTH_TOKEN }}
-          NETLIFY_SITE_ID: ${{ secrets.NETLIFY_SITE_ID }}
-        run: |
-          if [ -z "$NETLIFY_AUTH_TOKEN" ] || [ -z "$NETLIFY_SITE_ID" ]; then
-            echo "Netlify secrets not set, skipping deploy."
-            exit 0
-          fi
-          npm install -g netlify-cli
-          if [ -d out ]; then
-            netlify deploy --auth=$NETLIFY_AUTH_TOKEN --site=$NETLIFY_SITE_ID --prod --dir=out
-          elif [ -d .next ]; then
-            netlify deploy --auth=$NETLIFY_AUTH_TOKEN --site=$NETLIFY_SITE_ID --prod --dir=.next
-          else
-            netlify deploy --auth=$NETLIFY_AUTH_TOKEN --site=$NETLIFY_SITE_ID --prod
-          fi
-
-      - name: Post-deploy info
-        run: echo "Deploy step finished."
+{
+  "root": true,
+  "ignorePatterns": [".next/", "out/", "build/", "cypress/videos/", "cypress/screenshots/"],
+  "overrides": [
+    {
+      "files": ["src/**/*.{ts,tsx}", "pages/**/*.{ts,tsx}", "_app.tsx", "_document.tsx"],
+      "parser": "@typescript-eslint/parser",
+      "parserOptions": {
+        "project": "./tsconfig.json",
+        "tsconfigRootDir": ".",
+        "ecmaFeatures": {
+          "jsx": true
+        }
+      },
+      "extends": [
+        "eslint:recommended",
+        "plugin:react/recommended",
+        "plugin:@typescript-eslint/recommended",
+        "plugin:react-hooks/recommended",
+        "next/core-web-vitals"
+      ],
+      "plugins": ["@typescript-eslint", "react", "react-hooks"],
+      "rules": {
+        "react/react-in-jsx-scope": "off",
+        "react/jsx-uses-react": "off",
+        "@typescript-eslint/explicit-module-boundary-types": "off"
+      }
+    },
+    {
+      "files": [
+        "cypress/**/*.ts",
+        "cypress/**/*.tsx",
+        "**/*.spec.ts",
+        "**/*.spec.tsx",
+        "**/*.test.ts",
+        "**/*.test.tsx"
+      ],
+      "parser": "@typescript-eslint/parser",
+      "parserOptions": {
+        "ecmaFeatures": {
+          "jsx": true
+        }
+      },
+      "env": {
+        "cypress/globals": true,
+        "jest": true,
+        "browser": true,
+        "node": true
+      },
+      "plugins": ["cypress"],
+      "extends": ["plugin:cypress/recommended"],
+      "rules": {}
+    },
+    {
+      "files": ["**/*.js"],
+      "parserOptions": {
+        "ecmaVersion": 2021,
+        "sourceType": "module"
+      }
+    }
+  ]
+}
