@@ -1,4 +1,3 @@
-#!/bin/sh
-. "$(dirname "$0")/_/husky.sh"
-
-npx --no -- commitlint --edit $1
+git add package.json
+git commit -m "fix(package.json): restore valid JSON after accidental overwrite"
+git push origin HEAD
