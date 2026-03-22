@@ -21,7 +21,11 @@
                     {item.label}
                   </a>
                 ) : (
-                  <Link href={item.href} className={`border-none hover:text-gray-900 ${isActive ? 'text-gray-900 font-semibold' : 'text-gray-700'}`}>
+                  <Link
+                    href={item.href}
+                    className={`border-none hover:text-gray-900 ${isActive ? 'text-gray-900 font-semibold' : 'text-gray-700'}`}
+                    aria-current={isActive ? 'page' : undefined}
+                  >
                     {item.label}
                   </Link>
                 )}
