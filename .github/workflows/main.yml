@@ -1,6 +1,7 @@
 name: CI
 
 on:
+  workflow_dispatch: {}          # يضيف زر "Run workflow" لتشغيل يدوي
   push:
     branches: [ main, master ]
   pull_request:
@@ -24,7 +25,8 @@ jobs:
           echo "Runner: $(uname -a)"
           node -v
           npm -v
-          ls -la
+          echo "Branch: $GITHUB_REF"
+          echo "Commit: $GITHUB_SHA"
           echo "---- package.json ----"
           cat package.json || true
           echo "----------------------"
@@ -46,15 +48,31 @@ jobs:
             echo "No test script found, skipping tests."
           fi
 
-      - name: Build (if present)
+      - name: Build & Export (Next.js -> static out)
         env:
           NODE_ENV: production
         run: |
+          # If project has build script, run it
           if npm run | grep -q " build"; then
-            echo "Running build..."
+            echo "Running npm run build..."
             npm run build --if-present || (echo "Build failed" && exit 1)
           else
             echo "No build script found, skipping build."
+          fi
+
+          # If project uses next export, run export to produce out/
+          # This checks if `next export` available (typical when using next)
+          if npm run | grep -q " export"; then
+            echo "Running npm run export..."
+            npm run export --if-present || (echo "next export failed" && exit 1)
+          else
+            # Try running `npx next export` if next is installed locally and out/ missing
+            if [ -f node_modules/next/package.json ] && [ ! -d out ]; then
+              echo "Running npx next export..."
+              npx next export || echo "npx next export finished (non-zero exit allowed if not using next export)"
+            else
+              echo "No export script and out/ already present or next not installed; skipping export."
+            fi
           fi
 
       - name: Start server (if start script exists) for E2E
@@ -125,6 +143,16 @@ jobs:
         if: env.SKIP_NETLIFY == 'false'
         run: npm install -g netlify-cli
 
+      - name: Ensure out/ exists (when secrets present)
+        if: env.SKIP_NETLIFY == 'false'
+        run: |
+          if [ ! -d out ]; then
+            echo "out/ directory not found. Showing current folder contents:"
+            ls -la
+            echo "You may need to run next export or adjust the --dir value."
+            exit 1
+          fi
+
       - name: Run Netlify deploy (when secrets present)
         if: env.SKIP_NETLIFY == 'false'
         env:
@@ -132,8 +160,7 @@ jobs:
           NETLIFY_SITE_ID: ${{ secrets.NETLIFY_SITE_ID }}
         run: |
           echo "Deploying to Netlify site id: $NETLIFY_SITE_ID"
-          # Adjust --dir to the actual output folder of your build (e.g., out, build, .next)
-          netlify deploy --prod --dir=.next --site=$NETLIFY_SITE_ID
+          netlify deploy --prod --dir=out --site=$NETLIFY_SITE_ID
 
       # Cleanup
       - name: Stop background server (cleanup)
