@@ -22,52 +22,67 @@ jobs:
           node-version: ${{ matrix.node-version }}
           cache: 'npm'
 
+      - name: Show environment (debug)
+        run: |
+          node -v
+          npm -v
+          ls -la
+          cat package.json
+
       - name: Install dependencies
         run: npm ci
 
       - name: Run ESLint
         run: npm run lint --if-present
-        continue-on-error: false
 
       - name: Run unit tests (Jest) and collect coverage
         env:
           CI: true
         run: |
-          # ensure coverage folder exists for artifact upload even if jest not configured
           mkdir -p coverage
-          npm test -- --coverage --runInBand || (echo "Jest failed" && exit 1)
+          npm test -- --coverage --runInBand
 
       - name: Upload test coverage artifact
         uses: actions/upload-artifact@v4
         with:
           name: coverage-report
           path: coverage
+          if-no-files-found: ignore
 
       - name: Build Next.js
         env:
           NODE_ENV: production
         run: npm run build --if-present
 
+      - name: Install Chrome deps for Cypress
+        if: always()
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y libgtk2.0-0 libgtk-3-0 libnotify-dev libgconf-2-4 \
+            libnss3 libxss1 libasound2 xvfb
+
       - name: Start local server for E2E (serve built Next)
         if: always()
         run: |
-          # If you have a custom start/build script adjust these commands.
-          # This uses `npm run start` to serve the built app on port 3000.
-          # If your project uses `next start` or a different port adjust accordingly.
-          nohup npm run start --if-present &>/tmp/next-start.log &
+          # Start production server on port 3000; adjust if your start script differs.
+          # Capture PID and redirect logs so we can debug if it fails.
+          npm run start --if-present &> /tmp/next-start.log &
+          echo $! > /tmp/next-start.pid || true
+          sleep 1
+          tail -n +1 /tmp/next-start.log || true
 
-      - name: Wait for local server to be ready
+      - name: Wait for local server to be ready (http)
         run: |
-          # wait for port 3000 up to 60s (adjust port if needed)
-          for i in {1..30}; do
-            if nc -z localhost 3000; then
-              echo "server up"
+          # try curl until we get a 200 or timeout
+          for i in $(seq 1 30); do
+            if curl -sSf http://localhost:3000/_next/static/ -o /dev/null; then
+              echo "server ready"
               exit 0
             fi
-            echo "waiting..."
+            echo "waiting for server... ($i)"
             sleep 2
           done
-          echo "Server did not start on port 3000"
+          echo "Server did not start on port 3000. Dumping log:"
           cat /tmp/next-start.log || true
           exit 1
 
@@ -75,9 +90,7 @@ jobs:
         env:
           CI: true
         run: |
-          # If Cypress is configured with scripts like "cy:run" change accordingly.
-          npx cypress run --browser chrome || (echo "Cypress failed" && exit 1)
-        continue-on-error: false
+          npx cypress run --headless --browser chrome
 
       - name: Upload Cypress videos/screenshots (if any)
         uses: actions/upload-artifact@v4
@@ -98,7 +111,7 @@ jobs:
           if-no-files-found: ignore
 
       - name: Deploy to Netlify (optional)
-        if: github.event_name != 'pull_request' && secrets.NETLIFY_AUTH_TOKEN && secrets.NETLIFY_SITE_ID
+        if: github.event_name != 'pull_request' && (secrets.NETLIFY_AUTH_TOKEN && secrets.NETLIFY_SITE_ID)
         uses: nwtgck/actions-netlify@v1.2
         with:
           publish-dir: .next
@@ -110,4 +123,10 @@ jobs:
       - name: Stop local server (cleanup)
         if: always()
         run: |
-          pkill -f "node .*start" || true
+          if [ -f /tmp/next-start.pid ]; then
+            kill $(cat /tmp/next-start.pid) || true
+            rm -f /tmp/next-start.pid
+          else
+            pkill -f "node .*start" || true
+          fi
+          sleep 1
