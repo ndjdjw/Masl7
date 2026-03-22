@@ -64,8 +64,6 @@ jobs:
       - name: Start local server for E2E (serve built Next)
         if: always()
         run: |
-          # Start production server on port 3000; adjust if your start script differs.
-          # Capture PID and redirect logs so we can debug if it fails.
           npm run start --if-present &> /tmp/next-start.log &
           echo $! > /tmp/next-start.pid || true
           sleep 1
@@ -73,7 +71,6 @@ jobs:
 
       - name: Wait for local server to be ready (http)
         run: |
-          # try curl until we get a 200 or timeout
           for i in $(seq 1 30); do
             if curl -sSf http://localhost:3000/_next/static/ -o /dev/null; then
               echo "server ready"
@@ -111,7 +108,8 @@ jobs:
           if-no-files-found: ignore
 
       - name: Deploy to Netlify (optional)
-        if: github.event_name != 'pull_request' && (secrets.NETLIFY_AUTH_TOKEN && secrets.NETLIFY_SITE_ID)
+        # Only run on pushes (not PRs). The action itself will fail if secrets are missing.
+        if: github.event_name != 'pull_request'
         uses: nwtgck/actions-netlify@v1.2
         with:
           publish-dir: .next
