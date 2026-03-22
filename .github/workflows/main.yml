@@ -1,3 +1,6 @@
+# 1) استبدال ملف الـ workflow بالمحتوى الصحيح
+mkdir -p .github/workflows
+cat > .github/workflows/main.yml <<'EOF'
 name: CI - Safe Run (manual + push)
 
 on:
@@ -29,7 +32,7 @@ jobs:
           echo "=== Found .eslintrc files ==="
           find . -maxdepth 3 -type f -name ".eslintrc*" -print || true
           echo "=== package.json eslintConfig (if any) ==="
-          node -e "const fs=require('fs'); if(fs.existsSync('package.json')){const j=JSON.parse(fs.readFileSync('package.json')); console.log(JSON.stringify(j.eslintConfig||null,null,2));} else console.log(null)"
+          node -e "const fs=require('fs'); if(fs.existsSync('package.json')){try{const j=JSON.parse(fs.readFileSync('package.json')); console.log(JSON.stringify(j.eslintConfig||null,null,2));}catch(e){console.error('package.json is invalid JSON');}} else console.log(null)"
 
       - name: Lint (do not fail workflow if lint errors)
         run: |
@@ -57,3 +60,42 @@ jobs:
           else
             echo "No build script defined or jq not available, skipping build."
           fi
+EOF
+
+# 2) تأكد من صلاحية package.json؛ إن كان تالفًا استبدله بنسخة مؤقتة صالحة
+if node -e "JSON.parse(require('fs').readFileSync('package.json','utf8')); console.log('VALID')" 2>/dev/null | grep -q VALID; then
+  echo "package.json is valid JSON — no change."
+else
+  echo "package.json is invalid or missing — writing a temporary valid package.json"
+  cat > package.json <<'EOF'
+{
+  "name": "next-js-boilerplate",
+  "version": "2.0.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "next lint",
+    "test": "jest"
+  },
+  "dependencies": {
+    "next": "^12.2.0",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0"
+  },
+  "devDependencies": {
+    "eslint": "^8.19.0",
+    "typescript": "^4.7.4",
+    "jest": "^28.1.2",
+    "cypress": "^10.3.0"
+  },
+  "author": "Ixartz"
+}
+EOF
+fi
+
+# 3) أضف و commit و push التغييرات
+git add .github/workflows/main.yml package.json
+git commit -m "fix(ci): restore valid workflow and ensure package.json is valid" || echo "Nothing to commit or commit failed"
+git push origin HEAD || echo "Push failed — check remote/branch permissions"
