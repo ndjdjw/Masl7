@@ -12,11 +12,12 @@ jobs:
     strategy:
       matrix:
         node-version: [18.x]
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Use Node.js ${{ matrix.node-version }}
+      - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: ${{ matrix.node-version }}
@@ -24,15 +25,16 @@ jobs:
 
       - name: Show environment (debug)
         run: |
+          echo "Running on $(uname -a)"
           node -v
           npm -v
           ls -la
-          cat package.json
+          cat package.json || true
 
       - name: Install dependencies
         run: npm ci
 
-      - name: Run ESLint
+      - name: Run ESLint (if present)
         run: npm run lint --if-present
 
       - name: Run unit tests (Jest) and collect coverage
@@ -40,9 +42,9 @@ jobs:
           CI: true
         run: |
           mkdir -p coverage
-          npm test -- --coverage --runInBand
+          npm test -- --coverage --runInBand || (echo "Jest failed" && exit 1)
 
-      - name: Upload test coverage artifact
+      - name: Upload coverage artifact
         uses: actions/upload-artifact@v4
         with:
           name: coverage-report
@@ -59,17 +61,18 @@ jobs:
         run: |
           sudo apt-get update -y
           sudo apt-get install -y libgtk2.0-0 libgtk-3-0 libnotify-dev libgconf-2-4 \
-            libnss3 libxss1 libasound2 xvfb
+            libnss3 libxss1 libasound2 xvfb || true
 
       - name: Start local server for E2E (serve built Next)
         if: always()
         run: |
+          # Start production server on port 3000 (adjust if your start script differs)
           npm run start --if-present &> /tmp/next-start.log &
           echo $! > /tmp/next-start.pid || true
           sleep 1
           tail -n +1 /tmp/next-start.log || true
 
-      - name: Wait for local server to be ready (http)
+      - name: Wait for local server to be ready (HTTP)
         run: |
           for i in $(seq 1 30); do
             if curl -sSf http://localhost:3000/_next/static/ -o /dev/null; then
@@ -87,9 +90,10 @@ jobs:
         env:
           CI: true
         run: |
+          # ensure Cypress is installed; use headless chrome
           npx cypress run --headless --browser chrome
 
-      - name: Upload Cypress videos/screenshots (if any)
+      - name: Upload Cypress artifacts (if any)
         uses: actions/upload-artifact@v4
         with:
           name: cypress-artifacts
@@ -98,7 +102,7 @@ jobs:
             cypress/screenshots
           if-no-files-found: ignore
 
-      - name: Upload test-results (jest) (optional)
+      - name: Upload jest results (optional)
         uses: actions/upload-artifact@v4
         with:
           name: jest-results
@@ -107,16 +111,32 @@ jobs:
             test-results
           if-no-files-found: ignore
 
-      - name: Deploy to Netlify (optional)
-        # Only run on pushes (not PRs). The action itself will fail if secrets are missing.
+      # --- Guarded Netlify deploy using netlify-cli so we can check secrets at runtime ---
+      - name: Check Netlify secrets and prepare deploy
         if: github.event_name != 'pull_request'
-        uses: nwtgck/actions-netlify@v1.2
-        with:
-          publish-dir: .next
-          production-branch: main
-          enable-commit-comment: false
+        run: |
+          echo "Checking NETLIFY_AUTH_TOKEN and NETLIFY_SITE_ID..."
+          if [ -z "${{ secrets.NETLIFY_AUTH_TOKEN }}" ] || [ -z "${{ secrets.NETLIFY_SITE_ID }}" ]; then
+            echo "NETLIFY_AUTH_TOKEN or NETLIFY_SITE_ID is NOT set. Skipping Netlify deploy."
+            echo "skip_netlify=true" >> $GITHUB_ENV
+          else
+            echo "Netlify secrets found."
+            echo "skip_netlify=false" >> $GITHUB_ENV
+          fi
+
+      - name: Install netlify-cli (for deploy)
+        if: env.skip_netlify == 'false'
+        run: npm install -g netlify-cli
+
+      - name: Run Netlify deploy (only when secrets present)
+        if: env.skip_netlify == 'false'
+        env:
           NETLIFY_AUTH_TOKEN: ${{ secrets.NETLIFY_AUTH_TOKEN }}
           NETLIFY_SITE_ID: ${{ secrets.NETLIFY_SITE_ID }}
+        run: |
+          echo "Publishing to Netlify site: $NETLIFY_SITE_ID"
+          # publish the .next directory; if your deploy uses a different dir (like out or public) adjust accordingly
+          netlify deploy --prod --dir=.next --site=$NETLIFY_SITE_ID
 
       - name: Stop local server (cleanup)
         if: always()
